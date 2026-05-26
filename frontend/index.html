@@ -1,0 +1,184 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <base href="/ui/" />
+  <title>SERIAL AI</title>
+  <link rel="stylesheet" href="css/style.css" />
+</head>
+<body>
+
+  <!-- Scan line overlay -->
+  <div class="scanlines"></div>
+
+  <!-- Background grid -->
+  <canvas id="grid-canvas"></canvas>
+
+  <!-- ── CUSTOM TITLE BAR (frameless window drag region) ── -->
+  <div class="title-bar" id="title-bar">
+    <div class="title-bar-logo">
+      <span class="tb-bracket">[</span> SERIAL<span class="tb-accent"> AI</span> <span class="tb-bracket">]</span>
+    </div>
+    <div class="title-bar-drag"></div>
+    <div class="title-bar-controls">
+      <button class="wc-btn wc-min" onclick="windowMinimize()" title="Minimize">&#x2014;</button>
+      <button class="wc-btn wc-max" onclick="windowMaximize()" title="Maximize">&#x25A1;</button>
+      <button class="wc-btn wc-close" onclick="windowClose()" title="Close">&#x2715;</button>
+    </div>
+  </div>
+
+  <!-- ── TOP HUD BAR ── -->
+  <header class="hud-header">
+    <div class="hud-status-bar">
+      <span class="status-dot" id="connection-dot"></span>
+      <span id="connection-label">INITIALIZING</span>
+      <span class="divider">|</span>
+      <span id="ai-status-label">STANDBY</span>
+    </div>
+    <div class="hud-date" id="hud-datetime"></div>
+  </header>
+
+  <!-- ── MAIN LAYOUT ── -->
+  <main class="main-layout">
+
+    <!-- Left panel: System Stats -->
+    <aside class="panel panel-left">
+      <div class="panel-title">SYS MONITOR</div>
+
+      <div class="stat-block">
+        <div class="stat-label">CPU LOAD</div>
+        <div class="stat-bar-wrap"><div class="stat-bar" id="cpu-bar"></div></div>
+        <div class="stat-value" id="cpu-val">--%</div>
+      </div>
+
+      <div class="stat-block">
+        <div class="stat-label">MEMORY</div>
+        <div class="stat-bar-wrap"><div class="stat-bar" id="ram-bar"></div></div>
+        <div class="stat-value" id="ram-val">--%</div>
+      </div>
+
+      <div class="stat-block">
+        <div class="stat-label">DISK</div>
+        <div class="stat-bar-wrap"><div class="stat-bar" id="disk-bar"></div></div>
+        <div class="stat-value" id="disk-val">--%</div>
+      </div>
+
+      <div class="panel-title" style="margin-top:20px">NETWORK</div>
+      <div class="net-stats">
+        <div class="net-row"><span class="net-label">SENT</span><span class="net-value" id="net-sent">-- MB</span></div>
+        <div class="net-row"><span class="net-label">RECV</span><span class="net-value" id="net-recv">-- MB</span></div>
+        <div class="net-row"><span class="net-label">CONN</span><span class="net-value" id="net-conn">--</span></div>
+      </div>
+
+      <div class="panel-title" style="margin-top:20px">TOP PROCESSES</div>
+      <div id="process-list" class="process-list"></div>
+    </aside>
+
+    <!-- Center: Arc Reactor + Chat -->
+    <section class="center-column">
+
+      <div class="reactor-wrap">
+        <canvas id="reactor-canvas" width="260" height="260"></canvas>
+        <div class="reactor-label" id="reactor-label">SERIAL AI</div>
+        <div class="reactor-sublabel" id="reactor-sublabel">READY</div>
+      </div>
+
+      <canvas id="wave-canvas" class="wave-canvas"></canvas>
+
+      <div class="chat-window" id="chat-window">
+        <div class="chat-welcome">
+          <span class="welcome-line">SERIAL AI ONLINE</span>
+          <span class="welcome-sub">Voice or text command accepted</span>
+        </div>
+      </div>
+
+      <div class="input-row">
+        <button class="mic-btn" id="mic-btn" title="Toggle voice input">
+          <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+            <path d="M19 10v2a7 7 0 0 1-14 0v-2" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+            <line x1="12" y1="19" x2="12" y2="23" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+            <line x1="8" y1="23" x2="16" y2="23" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+          </svg>
+        </button>
+        <input type="text" id="text-input" class="text-input" placeholder="Enter command or query..." autocomplete="off" spellcheck="false" />
+        <button class="send-btn" id="send-btn">EXECUTE</button>
+      </div>
+
+      <div class="quick-actions">
+        <button class="qa-btn" data-cmd="Show system information">SYS INFO</button>
+        <button class="qa-btn" data-cmd="List the top 10 processes by CPU usage">PROCESSES</button>
+        <button class="qa-btn" data-cmd="Show network statistics">NETWORK</button>
+        <button class="qa-btn" data-cmd="What is my battery status?">BATTERY</button>
+        <button class="qa-btn" data-cmd="List startup programs">STARTUP</button>
+        <button class="qa-btn" onclick="resetConversation()">RESET</button>
+      </div>
+    </section>
+
+    <!-- Right panel -->
+    <aside class="panel panel-right">
+      <div class="panel-title">CAPABILITIES</div>
+      <ul class="cap-list">
+        <li>Process management</li>
+        <li>File system search</li>
+        <li>Hardware monitoring</li>
+        <li>Network diagnostics</li>
+        <li>App launching</li>
+        <li>Volume control</li>
+        <li>Startup programs</li>
+        <li>Live web search</li>
+      </ul>
+
+      <div class="panel-title" style="margin-top:20px">EXAMPLE COMMANDS</div>
+      <ul class="example-list">
+        <li>"Kill Chrome"</li>
+        <li>"Search for resume.pdf"</li>
+        <li>"What's using the most RAM?"</li>
+        <li>"Open Notepad"</li>
+        <li>"Set volume to 50"</li>
+        <li>"Latest Python version?"</li>
+        <li>"Show startup programs"</li>
+        <li>"Today's weather in NYC"</li>
+      </ul>
+
+      <div class="panel-title" style="margin-top:20px">SESSION</div>
+      <div class="session-info">
+        <div class="sess-row"><span>Messages</span><span id="msg-count">0</span></div>
+        <div class="sess-row"><span>Voice queries</span><span id="voice-count">0</span></div>
+        <div class="sess-row"><span>Processes</span><span id="proc-count">--</span></div>
+      </div>
+    </aside>
+
+  </main>
+
+  <!-- ── BOTTOM BAR ── -->
+  <footer class="hud-footer">
+    <span class="footer-item">SERIAL AI v1.0</span>
+    <span class="footer-item" id="footer-cpu">CPU: --%</span>
+    <span class="footer-item" id="footer-ram">RAM: --%</span>
+    <span class="footer-item" id="footer-proc">PROC: --</span>
+    <span class="footer-item footer-right">OPENROUTER · GPT-4O-MINI + SONAR · SYSTEM CONTROL ENABLED</span>
+  </footer>
+
+  <script src="js/socket.io.min.js"></script>
+  <script src="js/marked.min.js"></script>
+  <script src="js/animations.js"></script>
+  <script src="js/visualizer.js"></script>
+  <script src="js/app.js"></script>
+
+  <script>
+    // PyWebView window control bridge
+    function windowMinimize() {
+      if (window.pywebview) window.pywebview.api.minimize();
+    }
+    function windowMaximize() {
+      if (window.pywebview) window.pywebview.api.toggle_maximize();
+    }
+    function windowClose() {
+      if (window.pywebview) window.pywebview.api.close_window();
+      else window.close();
+    }
+  </script>
+</body>
+</html>
