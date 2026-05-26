@@ -146,13 +146,19 @@ def list_processes(sort_by: str = "cpu", limit: int = 20) -> list:
 
 
 def _list_processes_wsl(sort_by: str, limit: int) -> list:
-    sort_prop = "WorkingSet" if sort_by == "memory" else "CPU"
+    # Win32_PerfFormattedData_PerfProc_Process gives real-time CPU % (not cumulative seconds)
+    sort_prop = "WorkingSetPrivate" if sort_by == "memory" else "PercentProcessorTime"
     script = f"""
-Get-Process | Sort-Object {sort_prop} -Descending | Select-Object -First {limit} `
-  @{{N='pid';E={{$_.Id}}}},
-  @{{N='name';E={{$_.Name}}}},
-  @{{N='cpu';E={{[math]::Round($_.CPU,1)}}}},
-  @{{N='mem';E={{[math]::Round($_.WorkingSet/1MB,1)}}}} |
+$perf = Get-WmiObject Win32_PerfFormattedData_PerfProc_Process |
+    Where-Object {{ $_.Name -ne '_Total' -and $_.Name -ne 'Idle' }} |
+    Sort-Object {sort_prop} -Descending |
+    Select-Object -First {limit} Name, IDProcess, PercentProcessorTime,
+        @{{N='MemMB';E={{[math]::Round($_.WorkingSetPrivate/1MB,1)}}}}
+$perf | Select-Object `
+    @{{N='pid';E={{$_.IDProcess}}}},
+    @{{N='name';E={{$_.Name}}}},
+    @{{N='cpu';E={{[math]::Round($_.PercentProcessorTime,1)}}}},
+    @{{N='mem';E={{$_.MemMB}}}} |
 ConvertTo-Json
 """
     try:
