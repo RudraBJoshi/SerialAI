@@ -21,11 +21,11 @@ def _is_wsl() -> bool:
 IS_WSL = _is_wsl()
 
 
-def _ps(cmd: str) -> str:
+def _ps(cmd: str, timeout: int = 15) -> str:
     """Run a PowerShell command on the Windows host and return stdout."""
     result = subprocess.run(
         ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", cmd],
-        capture_output=True, text=True, timeout=15,
+        capture_output=True, text=True, timeout=timeout,
     )
     return result.stdout.strip()
 
@@ -213,23 +213,45 @@ def list_processes(sort_by: str = "cpu", limit: int = 20) -> list:
 
 
 def _list_processes_wsl(sort_by: str, limit: int) -> list:
-    # Win32_PerfFormattedData_PerfProc_Process gives real-time CPU % (not cumulative seconds)
-    sort_prop = "WorkingSetPrivate" if sort_by == "memory" else "PercentProcessorTime"
+    # Get-Counter samples over 1 second — the only reliable way to get real-time CPU%
+    # from WSL2. WMI PerfFormattedData returns a raw 64-bit counter on the first call.
     script = f"""
-$perf = Get-WmiObject Win32_PerfFormattedData_PerfProc_Process |
-    Where-Object {{ $_.Name -ne '_Total' -and $_.Name -ne 'Idle' }} |
-    Sort-Object {sort_prop} -Descending |
-    Select-Object -First {limit} Name, IDProcess, PercentProcessorTime,
-        @{{N='MemMB';E={{[math]::Round($_.WorkingSetPrivate/1MB,1)}}}}
-$perf | Select-Object `
-    @{{N='pid';E={{$_.IDProcess}}}},
-    @{{N='name';E={{$_.Name}}}},
-    @{{N='cpu';E={{[math]::Round($_.PercentProcessorTime,1)}}}},
-    @{{N='mem';E={{$_.MemMB}}}} |
-ConvertTo-Json
+$cores = (Get-CimInstance Win32_ComputerSystem).NumberOfLogicalProcessors
+if (!$cores -or $cores -lt 1) {{ $cores = 1 }}
+
+$cpuMap = @{{}}
+$sample = Get-Counter '\Process(*)\% Processor Time' -SampleInterval 1 -MaxSamples 1 -ErrorAction SilentlyContinue
+if ($sample) {{
+    $sample.CounterSamples |
+        Where-Object {{ $_.InstanceName -notmatch '^(idle|_total)$' }} |
+        ForEach-Object {{
+            $n = $_.InstanceName.ToLower()
+            if (!$cpuMap.ContainsKey($n)) {{ $cpuMap[$n] = 0.0 }}
+            $cpuMap[$n] += $_.CookedValue
+        }}
+}}
+
+$procs = Get-Process -ErrorAction SilentlyContinue | ForEach-Object {{
+    $n = $_.Name.ToLower()
+    $raw = if ($cpuMap.ContainsKey($n)) {{ $cpuMap[$n] }} else {{ 0.0 }}
+    [PSCustomObject]@{{
+        pid  = $_.Id
+        name = $_.Name
+        cpu  = [math]::Round($raw / $cores, 1)
+        mem  = [math]::Round($_.WorkingSet / 1MB, 1)
+    }}
+}}
+
+if ('{sort_by}' -eq 'memory') {{
+    $sorted = $procs | Sort-Object mem -Descending
+}} else {{
+    $sorted = $procs | Sort-Object cpu -Descending
+}}
+
+$sorted | Select-Object -First {limit} pid, name, cpu, mem | ConvertTo-Json
 """
     try:
-        raw = json.loads(_ps(script))
+        raw = json.loads(_ps(script, timeout=25))
         if isinstance(raw, dict):
             raw = [raw]
         for p in raw:
