@@ -199,25 +199,71 @@ async function sendMessage(text) {
   }
 }
 
-// ── Voice Control ──────────────────────────────────────────────────────────────
-async function toggleVoice() {
-  if (!isListening) {
+// ── Voice Control (Web Speech API) ────────────────────────────────────────────
+let _recognition = null;
+
+function toggleVoice() {
+  if (isListening) {
+    _stopVoice();
+    return;
+  }
+
+  const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if (!SpeechRecognition) {
+    appendMessage("ai", "Speech recognition is not supported in this browser. Try Chrome or Edge.");
+    return;
+  }
+
+  _recognition = new SpeechRecognition();
+  _recognition.lang = "en-US";
+  _recognition.interimResults = false;
+  _recognition.continuous = false;
+
+  _recognition.onstart = () => {
     isListening = true;
     micBtn.classList.add("active");
-    try {
-      await fetch(`${API}/api/voice/start`, { method: "POST" });
-    } catch (e) {
-      isListening = false;
-      micBtn.classList.remove("active");
+    aiStatusLabel.textContent = "LISTENING";
+    Visualizer.setMode("listening");
+    ReactorAnim.setState("listening");
+  };
+
+  _recognition.onspeechend = () => {
+    aiStatusLabel.textContent = "PROCESSING";
+    Visualizer.setMode("thinking");
+  };
+
+  _recognition.onresult = (event) => {
+    const text = event.results[0][0].transcript;
+    voiceCount++;
+    voiceCountEl.textContent = voiceCount;
+    sendMessage(text);
+  };
+
+  _recognition.onerror = (event) => {
+    if (event.error === "not-allowed") {
+      appendMessage("ai", "Microphone access denied. Allow mic permission and try again.");
+    } else if (event.error !== "aborted" && event.error !== "no-speech") {
+      appendMessage("ai", `Mic error: ${event.error}`);
     }
-  } else {
-    isListening = false;
-    micBtn.classList.remove("active");
-    Visualizer.setMode("idle");
-    ReactorAnim.setState("idle");
-    try {
-      await fetch(`${API}/api/voice/stop`, { method: "POST" });
-    } catch (e) {}
+    _stopVoice();
+  };
+
+  _recognition.onend = () => {
+    _stopVoice();
+  };
+
+  _recognition.start();
+}
+
+function _stopVoice() {
+  isListening = false;
+  micBtn.classList.remove("active");
+  Visualizer.setMode("idle");
+  ReactorAnim.setState("idle");
+  aiStatusLabel.textContent = "STANDBY";
+  if (_recognition) {
+    try { _recognition.stop(); } catch (_) {}
+    _recognition = null;
   }
 }
 
