@@ -133,6 +133,33 @@ SCHEMAS = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "run_powershell",
+            "description": (
+                "Execute any PowerShell command on the Windows host. "
+                "Use this for anything not covered by other tools: registry edits, "
+                "scheduled tasks, environment variables, disk operations, network config, "
+                "Windows features, event logs, services, firewall rules, or any custom script."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "command": {
+                        "type": "string",
+                        "description": "The PowerShell command or script to execute.",
+                    },
+                    "timeout": {
+                        "type": "integer",
+                        "description": "Max seconds to wait (default 30, max 120).",
+                        "default": 30,
+                    },
+                },
+                "required": ["command"],
+            },
+        },
+    },
 ]
 
 
@@ -202,6 +229,18 @@ def execute(name: str, args: dict, api_key: str = "") -> str:
 
         elif name == "web_search":
             return _perplexity_search(args["query"], api_key)
+
+        elif name == "run_powershell":
+            timeout = min(int(args.get("timeout", 30)), 120)
+            result = sm.run_powershell(args["command"], timeout=timeout)
+            parts = []
+            if result["stdout"]:
+                parts.append(result["stdout"])
+            if result["stderr"]:
+                parts.append(f"[stderr] {result['stderr']}")
+            if not parts:
+                parts.append(f"[exit code {result['exit_code']}]")
+            return "\n".join(parts)
 
         else:
             return f"Unknown tool: {name}"
