@@ -138,7 +138,8 @@ SCHEMAS = [
         "function": {
             "name": "run_powershell",
             "description": (
-                "Execute any PowerShell command on the Windows host. "
+                "Execute any PowerShell command on the Windows host as Administrator. "
+                "A UAC elevation prompt will appear on screen for the user to approve. "
                 "Use this for anything not covered by other tools: registry edits, "
                 "scheduled tasks, environment variables, disk operations, network config, "
                 "Windows features, event logs, services, firewall rules, or any custom script."

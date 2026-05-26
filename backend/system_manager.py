@@ -30,20 +30,69 @@ def _ps(cmd: str) -> str:
     return result.stdout.strip()
 
 
-def run_powershell(command: str, timeout: int = 30) -> dict:
-    """Execute an arbitrary PowerShell command on the Windows host."""
+def run_powershell(command: str, timeout: int = 60) -> dict:
+    """Execute a PowerShell command elevated (UAC prompt) on the Windows host.
+
+    Strategy:
+      1. Base64-encode the user command to sidestep all quoting issues.
+      2. Write it to a temp .ps1 via a non-elevated PS bridge.
+      3. Build an elevated runner script that executes the .ps1 and redirects
+         all output (2>&1) into a temp output file, also base64-encoded.
+      4. Launch that runner via Start-Process -Verb RunAs -Wait (shows UAC).
+      5. Read back the output file, clean up, return.
+    """
+    import base64
+    import time
+
+    ts = int(time.time())
+
+    # Encode the user command so it survives the here-string boundary
+    encoded_cmd = base64.b64encode(command.encode("utf-16-le")).decode()
+
+    # The bridge script runs unelevated; it:
+    #   • decodes the command and writes it to a temp .ps1
+    #   • builds the elevated runner command (also base64-encoded)
+    #   • calls Start-Process -Verb RunAs -Wait (UAC dialog appears here)
+    #   • reads and prints the captured output
+    bridge = f"""
+$ts         = '{ts}'
+$scriptFile = "$env:TEMP\\sai_cmd_$ts.ps1"
+$outFile    = "$env:TEMP\\sai_out_$ts.txt"
+
+# Decode and save the user command
+$bytes   = [Convert]::FromBase64String('{encoded_cmd}')
+$decoded = [Text.Encoding]::Unicode.GetString($bytes)
+Set-Content -Path $scriptFile -Value $decoded -Encoding UTF8
+
+# Build the elevated runner: execute script, capture all output to file
+$elevCmd = "& '$scriptFile' 2>&1 | Out-File -FilePath '$outFile' -Encoding UTF8"
+$elevEnc = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($elevCmd))
+
+# UAC prompt fires here; -Wait blocks until the elevated process exits
+Start-Process powershell.exe -Verb RunAs -Wait -WindowStyle Hidden `
+    -ArgumentList '-NoProfile', '-NonInteractive', '-EncodedCommand', $elevEnc
+
+Start-Sleep -Milliseconds 400
+$result = Get-Content $outFile -Raw -ErrorAction SilentlyContinue
+Remove-Item $scriptFile, $outFile -Force -ErrorAction SilentlyContinue
+
+if ($result) {{ $result.Trim() }} else {{ '[No output - UAC may have been cancelled]' }}
+"""
+
     try:
-        result = subprocess.run(
-            ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", command],
-            capture_output=True, text=True, timeout=timeout,
+        proc = subprocess.run(
+            ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", bridge],
+            capture_output=True, text=True, timeout=timeout + 30,
         )
+        stdout = proc.stdout.strip()
+        stderr = proc.stderr.strip()
         return {
-            "stdout": result.stdout.strip(),
-            "stderr": result.stderr.strip(),
-            "exit_code": result.returncode,
+            "stdout": stdout if stdout else (stderr or "[No output]"),
+            "stderr": stderr,
+            "exit_code": proc.returncode,
         }
     except subprocess.TimeoutExpired:
-        return {"stdout": "", "stderr": f"Command timed out after {timeout}s", "exit_code": -1}
+        return {"stdout": "", "stderr": f"Timed out after {timeout}s", "exit_code": -1}
     except Exception as e:
         return {"stdout": "", "stderr": str(e), "exit_code": -1}
 
