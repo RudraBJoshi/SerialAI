@@ -218,17 +218,21 @@ def _list_processes_wsl(sort_by: str, limit: int) -> list:
     # and WMI PerfFormattedData's broken first-call values.
     script = f"""
 $snap1 = @{{}}
-Get-Process -ErrorAction SilentlyContinue | ForEach-Object {{ $snap1[$_.Id] = $_.CPU }}
+Get-Process -ErrorAction SilentlyContinue | ForEach-Object {{
+    if ($null -ne $_.CPU) {{ $snap1[$_.Id] = [double]$_.CPU }}
+}}
 
 Start-Sleep -Milliseconds 1000
 
-$cores = (Get-CimInstance Win32_ComputerSystem).NumberOfLogicalProcessors
+$cores = try {{ (Get-CimInstance Win32_ComputerSystem).NumberOfLogicalProcessors }} catch {{ 1 }}
 if (!$cores -or $cores -lt 1) {{ $cores = 1 }}
 
 $result = Get-Process -ErrorAction SilentlyContinue | ForEach-Object {{
-    $prev    = if ($snap1.ContainsKey($_.Id)) {{ [double]$snap1[$_.Id] }} else {{ [double]$_.CPU }}
-    $delta   = [math]::Max(0, [double]$_.CPU - $prev)
-    $cpuPct  = [math]::Round($delta / 1.0 / $cores * 100, 1)
+    $cpuPct = 0.0
+    if ($snap1.ContainsKey($_.Id) -and $null -ne $_.CPU) {{
+        $delta  = [math]::Max(0.0, [double]$_.CPU - $snap1[$_.Id])
+        $cpuPct = [math]::Round($delta / 1.0 / $cores * 100, 1)
+    }}
     [PSCustomObject]@{{
         pid  = $_.Id
         name = $_.Name
