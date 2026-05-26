@@ -178,7 +178,7 @@ def execute(name: str, args: dict, api_key: str = "") -> str:
                 sort_by=args.get("sort_by", "cpu"),
                 limit=args.get("limit", 15),
             )
-            lines = [f"{p['name']:<30} CPU: {p['cpu']}%  MEM: {p['mem']}%  PID: {p['pid']}" for p in procs]
+            lines = [f"{p['name']:<30} CPU: {p['cpu']}%  MEM: {p['mem']} MB  PID: {p['pid']}" for p in procs]
             return "\n".join(lines)
 
         elif name == "kill_process":
