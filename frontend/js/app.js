@@ -205,58 +205,76 @@ async function sendMessage(text) {
 
 // ── Voice Control (Web Speech API) ────────────────────────────────────────────
 let _recognition = null;
+let _SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
 
 function toggleVoice() {
-  if (isListening) {
-    _stopVoice();
-    return;
-  }
+  if (isListening) { _stopVoice(); return; }
 
-  const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-  if (!SpeechRecognition) {
+  if (!_SpeechRecognition) {
     appendMessage("ai", "Speech recognition is not supported in this browser. Try Chrome or Edge.");
     return;
   }
 
-  _recognition = new SpeechRecognition();
-  _recognition.lang = "en-US";
-  _recognition.interimResults = false;
-  _recognition.continuous = false;
+  isListening = true;
+  micBtn.classList.add("active");
+  _startRecognition();
+}
 
-  _recognition.onstart = () => {
-    isListening = true;
-    micBtn.classList.add("active");
+function _startRecognition() {
+  if (!isListening) return;
+
+  if (_recognition) {
+    try { _recognition.abort(); } catch (_) {}
+    _recognition = null;
+  }
+
+  const r = new _SpeechRecognition();
+  r.lang = "en-US";
+  r.interimResults = false;
+  r.continuous = false;
+  _recognition = r;
+
+  r.onstart = () => {
     aiStatusLabel.textContent = "LISTENING";
     Visualizer.setMode("listening");
     ReactorAnim.setState("listening");
   };
 
-  _recognition.onspeechend = () => {
+  r.onspeechend = () => {
     aiStatusLabel.textContent = "PROCESSING";
     Visualizer.setMode("thinking");
   };
 
-  _recognition.onresult = (event) => {
+  r.onresult = (event) => {
     const text = event.results[0][0].transcript;
     voiceCount++;
     voiceCountEl.textContent = voiceCount;
     sendMessage(text);
   };
 
-  _recognition.onerror = (event) => {
+  r.onerror = (event) => {
     if (event.error === "not-allowed") {
       appendMessage("ai", "Microphone access denied. Allow mic permission and try again.");
-    } else if (event.error !== "aborted" && event.error !== "no-speech") {
+      _stopVoice();
+    } else if (event.error === "network") {
+      // Transient network hiccup — retry silently
+      aiStatusLabel.textContent = "RECONNECTING";
+      setTimeout(_startRecognition, 1500);
+    } else if (event.error === "no-speech") {
+      // Timeout with no speech — just restart
+      setTimeout(_startRecognition, 300);
+    } else if (event.error !== "aborted") {
       appendMessage("ai", `Mic error: ${event.error}`);
+      _stopVoice();
     }
-    _stopVoice();
   };
 
-  _recognition.onend = () => {
-    _stopVoice();
+  r.onend = () => {
+    // Restart automatically to keep listening until the user stops it
+    if (isListening) setTimeout(_startRecognition, 200);
   };
 
-  _recognition.start();
+  try { r.start(); } catch (e) { _stopVoice(); }
 }
 
 function _stopVoice() {
