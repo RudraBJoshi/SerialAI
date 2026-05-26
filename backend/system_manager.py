@@ -1,4 +1,4 @@
-"""Windows system management: processes, resources, files, hardware."""
+"""Windows system management — routes through PowerShell when running in WSL2."""
 
 import os
 import sys
@@ -9,9 +9,32 @@ from datetime import datetime
 
 import psutil
 
+# ── WSL detection ──────────────────────────────────────────────────────────────
+
+def _is_wsl() -> bool:
+    try:
+        with open("/proc/version") as f:
+            return "microsoft" in f.read().lower()
+    except OSError:
+        return False
+
+IS_WSL = _is_wsl()
+
+
+def _ps(cmd: str) -> str:
+    """Run a PowerShell command on the Windows host and return stdout."""
+    result = subprocess.run(
+        ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", cmd],
+        capture_output=True, text=True, timeout=15,
+    )
+    return result.stdout.strip()
+
+
+# ── System snapshot ────────────────────────────────────────────────────────────
 
 def get_system_snapshot() -> dict:
-    """Quick snapshot for context injection into AI."""
+    if IS_WSL:
+        return _snapshot_wsl()
     cpu = psutil.cpu_percent(interval=0.1)
     ram = psutil.virtual_memory()
     disk = psutil.disk_usage("/")
@@ -27,105 +50,128 @@ def get_system_snapshot() -> dict:
     }
 
 
-def get_full_system_info() -> dict:
-    """Detailed system hardware and OS information."""
-    info = {
-        "os": platform.system(),
-        "os_version": platform.version(),
-        "os_release": platform.release(),
-        "machine": platform.machine(),
-        "processor": platform.processor(),
-        "hostname": platform.node(),
-        "python_version": platform.python_version(),
-        "boot_time": datetime.fromtimestamp(psutil.boot_time()).strftime("%Y-%m-%d %H:%M:%S"),
-    }
+def _snapshot_wsl() -> dict:
+    script = """
+$cpu = (Get-WmiObject Win32_Processor | Measure-Object -Property LoadPercentage -Average).Average
+$os  = Get-WmiObject Win32_OperatingSystem
+$ram_pct  = [math]::Round(($os.TotalVisibleMemorySize - $os.FreePhysicalMemory) / $os.TotalVisibleMemorySize * 100, 1)
+$ram_used = [math]::Round(($os.TotalVisibleMemorySize - $os.FreePhysicalMemory) / 1MB, 2)
+$ram_tot  = [math]::Round($os.TotalVisibleMemorySize / 1MB, 2)
+$d = Get-PSDrive C
+$disk_used = [math]::Round($d.Used / 1GB, 2)
+$disk_tot  = [math]::Round(($d.Used + $d.Free) / 1GB, 2)
+$disk_pct  = [math]::Round($d.Used / ($d.Used + $d.Free) * 100, 1)
+$procs = (Get-Process).Count
+[PSCustomObject]@{cpu=$cpu;ram=$ram_pct;ram_used_gb=$ram_used;ram_total_gb=$ram_tot;disk_used_gb=$disk_used;disk_total_gb=$disk_tot;disk_percent=$disk_pct;processes=$procs} | ConvertTo-Json
+"""
+    try:
+        data = json.loads(_ps(script))
+        return {k: (round(float(v), 2) if isinstance(v, (int, float)) else v) for k, v in data.items()}
+    except Exception:
+        # Fallback to psutil (shows WSL stats at least)
+        cpu = psutil.cpu_percent(interval=0.1)
+        ram = psutil.virtual_memory()
+        return {"cpu": round(cpu, 1), "ram": round(ram.percent, 1), "processes": len(psutil.pids())}
 
-    # CPU
+
+# ── Full system info ───────────────────────────────────────────────────────────
+
+def get_full_system_info() -> dict:
+    if IS_WSL:
+        return _full_info_wsl()
+    # Native Windows / Linux
+    info = {
+        "os": platform.system(), "os_version": platform.version(),
+        "hostname": platform.node(), "processor": platform.processor(),
+    }
     info["cpu"] = {
         "physical_cores": psutil.cpu_count(logical=False),
         "logical_cores": psutil.cpu_count(logical=True),
         "usage_percent": psutil.cpu_percent(interval=0.5),
-        "freq_mhz": round(psutil.cpu_freq().current) if psutil.cpu_freq() else "N/A",
     }
-
-    # RAM
     ram = psutil.virtual_memory()
-    info["ram"] = {
-        "total_gb": round(ram.total / 1e9, 2),
-        "used_gb": round(ram.used / 1e9, 2),
-        "available_gb": round(ram.available / 1e9, 2),
-        "percent": ram.percent,
-    }
-
-    # Disk
-    disks = []
-    for part in psutil.disk_partitions():
-        try:
-            usage = psutil.disk_usage(part.mountpoint)
-            disks.append({
-                "device": part.device,
-                "mountpoint": part.mountpoint,
-                "fstype": part.fstype,
-                "total_gb": round(usage.total / 1e9, 2),
-                "used_gb": round(usage.used / 1e9, 2),
-                "free_gb": round(usage.free / 1e9, 2),
-                "percent": usage.percent,
-            })
-        except Exception:
-            pass
-    info["disks"] = disks
-
-    # Network
-    net = psutil.net_if_addrs()
-    interfaces = {}
-    for iface, addrs in net.items():
-        interfaces[iface] = [
-            {"family": str(addr.family), "address": addr.address}
-            for addr in addrs
-        ]
-    info["network_interfaces"] = interfaces
-
-    # Battery (laptops)
-    battery = psutil.sensors_battery()
-    if battery:
-        info["battery"] = {
-            "percent": round(battery.percent, 1),
-            "plugged_in": battery.power_plugged,
-            "time_left_min": round(battery.secsleft / 60) if battery.secsleft > 0 else "Charging",
-        }
-
+    info["ram"] = {"total_gb": round(ram.total/1e9,2), "used_gb": round(ram.used/1e9,2), "percent": ram.percent}
     return info
 
 
+def _full_info_wsl() -> dict:
+    script = """
+$cpu  = Get-WmiObject Win32_Processor | Select-Object -First 1
+$os   = Get-WmiObject Win32_OperatingSystem
+$disk = Get-PSDrive C
+$ram_used = [math]::Round(($os.TotalVisibleMemorySize - $os.FreePhysicalMemory)/1MB, 2)
+$ram_tot  = [math]::Round($os.TotalVisibleMemorySize/1MB, 2)
+$bat  = Get-WmiObject Win32_Battery -ErrorAction SilentlyContinue
+[PSCustomObject]@{
+  os            = $os.Caption
+  os_version    = $os.Version
+  hostname      = $env:COMPUTERNAME
+  cpu_name      = $cpu.Name
+  cpu_cores     = $cpu.NumberOfCores
+  cpu_threads   = $cpu.NumberOfLogicalProcessors
+  cpu_load      = $cpu.LoadPercentage
+  ram_total_gb  = $ram_tot
+  ram_used_gb   = $ram_used
+  ram_pct       = [math]::Round($ram_used/$ram_tot*100,1)
+  disk_used_gb  = [math]::Round($disk.Used/1GB,2)
+  disk_free_gb  = [math]::Round($disk.Free/1GB,2)
+  disk_total_gb = [math]::Round(($disk.Used+$disk.Free)/1GB,2)
+  battery_pct   = if($bat){$bat.EstimatedChargeRemaining}else{"N/A"}
+  battery_plug  = if($bat){$bat.BatteryStatus -eq 2}else{"N/A"}
+} | ConvertTo-Json
+"""
+    try:
+        return json.loads(_ps(script))
+    except Exception as e:
+        return {"error": str(e)}
+
+
+# ── Process list ───────────────────────────────────────────────────────────────
+
 def list_processes(sort_by: str = "cpu", limit: int = 20) -> list:
-    """List running processes sorted by CPU or memory."""
+    if IS_WSL:
+        return _list_processes_wsl(sort_by, limit)
     procs = []
     for p in psutil.process_iter(["pid", "name", "cpu_percent", "memory_percent", "status"]):
         try:
             info = p.info
-            procs.append({
-                "pid": info["pid"],
-                "name": info["name"] or "Unknown",
-                "cpu": round(info["cpu_percent"] or 0, 1),
-                "mem": round(info["memory_percent"] or 0, 2),
-                "status": info["status"],
-            })
+            procs.append({"pid": info["pid"], "name": info["name"] or "Unknown",
+                          "cpu": round(info["cpu_percent"] or 0, 1),
+                          "mem": round(info["memory_percent"] or 0, 2),
+                          "status": info["status"]})
         except (psutil.NoSuchProcess, psutil.AccessDenied):
             pass
-
-    if sort_by == "memory":
-        procs.sort(key=lambda x: x["mem"], reverse=True)
-    else:
-        procs.sort(key=lambda x: x["cpu"], reverse=True)
-
+    procs.sort(key=lambda x: x["mem" if sort_by == "memory" else "cpu"], reverse=True)
     return procs[:limit]
 
 
-def kill_process(identifier) -> dict:
-    """Kill a process by PID or name."""
-    killed = []
-    errors = []
+def _list_processes_wsl(sort_by: str, limit: int) -> list:
+    sort_prop = "WorkingSet" if sort_by == "memory" else "CPU"
+    script = f"""
+Get-Process | Sort-Object {sort_prop} -Descending | Select-Object -First {limit} `
+  @{{N='pid';E={{$_.Id}}}},
+  @{{N='name';E={{$_.Name}}}},
+  @{{N='cpu';E={{[math]::Round($_.CPU,1)}}}},
+  @{{N='mem';E={{[math]::Round($_.WorkingSet/1MB,1)}}}} |
+ConvertTo-Json
+"""
+    try:
+        raw = json.loads(_ps(script))
+        if isinstance(raw, dict):
+            raw = [raw]
+        for p in raw:
+            p.setdefault("status", "running")
+        return raw
+    except Exception:
+        return []
 
+
+# ── Kill process ───────────────────────────────────────────────────────────────
+
+def kill_process(identifier) -> dict:
+    if IS_WSL:
+        return _kill_process_wsl(identifier)
+    killed, errors = [], []
     try:
         pid = int(identifier)
         try:
@@ -138,7 +184,6 @@ def kill_process(identifier) -> dict:
         except psutil.AccessDenied:
             errors.append(f"Access denied for PID {pid}")
     except ValueError:
-        # It's a name
         name = str(identifier)
         for p in psutil.process_iter(["pid", "name"]):
             try:
@@ -147,98 +192,63 @@ def kill_process(identifier) -> dict:
                     killed.append(f"{p.info['name']} (PID {p.info['pid']})")
             except (psutil.NoSuchProcess, psutil.AccessDenied):
                 pass
-
     return {"killed": killed, "errors": errors}
 
 
-def search_files(query: str, search_path: str = None, limit: int = 20) -> list:
-    """Search for files by name pattern."""
-    if not search_path:
-        search_path = os.path.expanduser("~") if sys.platform != "win32" else "C:\\"
-
-    results = []
-    query_lower = query.lower()
-
+def _kill_process_wsl(identifier) -> dict:
     try:
-        for root, dirs, files in os.walk(search_path):
-            # Skip hidden/system directories
-            dirs[:] = [d for d in dirs if not d.startswith(".") and d not in {
-                "Windows", "System32", "$Recycle.Bin", "AppData\\Local\\Temp",
-                "__pycache__", "node_modules", ".git"
-            }]
-
-            for fname in files:
-                if query_lower in fname.lower():
-                    full_path = os.path.join(root, fname)
-                    try:
-                        stat = os.stat(full_path)
-                        results.append({
-                            "name": fname,
-                            "path": full_path,
-                            "size_kb": round(stat.st_size / 1024, 1),
-                            "modified": datetime.fromtimestamp(stat.st_mtime).strftime("%Y-%m-%d %H:%M"),
-                        })
-                    except Exception:
-                        results.append({"name": fname, "path": full_path})
-
-                    if len(results) >= limit:
-                        return results
-    except PermissionError:
-        pass
-
-    return results
-
-
-def get_network_stats() -> dict:
-    """Get current network I/O statistics."""
-    stats = psutil.net_io_counters()
-    connections = psutil.net_connections()
-    established = sum(1 for c in connections if c.status == "ESTABLISHED")
-    return {
-        "bytes_sent_mb": round(stats.bytes_sent / 1e6, 2),
-        "bytes_recv_mb": round(stats.bytes_recv / 1e6, 2),
-        "packets_sent": stats.packets_sent,
-        "packets_recv": stats.packets_recv,
-        "established_connections": established,
-        "total_connections": len(connections),
-    }
-
-
-def get_top_memory_processes(limit: int = 5) -> list:
-    procs = []
-    for p in psutil.process_iter(["pid", "name", "memory_percent"]):
+        pid = int(identifier)
+        out = _ps(f"Stop-Process -Id {pid} -Force -ErrorAction Stop; 'ok'")
+        if "ok" in out:
+            return {"killed": [f"PID {pid}"], "errors": []}
+        return {"killed": [], "errors": [f"Could not kill PID {pid}"]}
+    except ValueError:
+        # It's a name — strip .exe suffix for matching, add it back for Stop-Process
+        name = str(identifier).lower().replace(".exe", "")
+        # Find matching processes first so we can report what we killed
+        find = f"""
+Get-Process | Where-Object {{ $_.Name -like '*{name}*' }} |
+Select-Object @{{N='n';E={{$_.Name}}}},@{{N='id';E={{$_.Id}}}} |
+ConvertTo-Json
+"""
+        killed, errors = [], []
         try:
-            procs.append(p.info)
-        except (psutil.NoSuchProcess, psutil.AccessDenied):
-            pass
-    procs.sort(key=lambda x: x.get("memory_percent") or 0, reverse=True)
-    return procs[:limit]
+            raw = _ps(find)
+            if not raw:
+                return {"killed": [], "errors": [f"No process found matching '{identifier}'"]}
+            procs = json.loads(raw)
+            if isinstance(procs, dict):
+                procs = [procs]
+            for p in procs:
+                stop = _ps(f"Stop-Process -Id {p['id']} -Force -ErrorAction SilentlyContinue; 'ok'")
+                if "ok" in stop:
+                    killed.append(f"{p['n']} (PID {p['id']})")
+                else:
+                    errors.append(f"Failed to kill {p['n']}")
+        except Exception as e:
+            errors.append(str(e))
+        if not killed and not errors:
+            errors.append(f"No process found matching '{identifier}'")
+        return {"killed": killed, "errors": errors}
 
+
+# ── Launch application ─────────────────────────────────────────────────────────
 
 def launch_application(app_name: str) -> dict:
-    """Launch an application by name (Windows)."""
     app_map = {
-        "notepad": "notepad.exe",
-        "calculator": "calc.exe",
-        "paint": "mspaint.exe",
-        "explorer": "explorer.exe",
-        "task manager": "taskmgr.exe",
-        "cmd": "cmd.exe",
-        "powershell": "powershell.exe",
-        "edge": "msedge.exe",
-        "chrome": "chrome.exe",
-        "firefox": "firefox.exe",
-        "word": "winword.exe",
-        "excel": "excel.exe",
-        "control panel": "control.exe",
+        "notepad": "notepad.exe", "calculator": "calc.exe",
+        "paint": "mspaint.exe", "explorer": "explorer.exe",
+        "task manager": "taskmgr.exe", "cmd": "cmd.exe",
+        "powershell": "powershell.exe", "edge": "msedge.exe",
+        "chrome": "chrome.exe", "firefox": "firefox.exe",
+        "word": "winword.exe", "excel": "excel.exe",
         "settings": "ms-settings:",
     }
-
-    name_lower = app_name.lower().strip()
-    exe = app_map.get(name_lower, app_name)
-
+    exe = app_map.get(app_name.lower().strip(), app_name)
     try:
-        if sys.platform == "win32":
+        if IS_WSL:
+            _ps(f"Start-Process '{exe}'")
+        elif sys.platform == "win32":
             os.startfile(exe) if ":" in exe else subprocess.Popen([exe])
         else:
             subprocess.Popen(["xdg-open", exe])
@@ -247,38 +257,78 @@ def launch_application(app_name: str) -> dict:
         return {"success": False, "error": str(e)}
 
 
-def set_volume(level: int) -> dict:
-    """Set system volume 0-100 (Windows only)."""
-    if sys.platform != "win32":
-        return {"success": False, "error": "Windows only"}
+# ── Network stats ──────────────────────────────────────────────────────────────
+
+def get_network_stats() -> dict:
+    if IS_WSL:
+        return _network_stats_wsl()
+    stats = psutil.net_io_counters()
+    conns = psutil.net_connections()
+    return {
+        "bytes_sent_mb": round(stats.bytes_sent / 1e6, 2),
+        "bytes_recv_mb": round(stats.bytes_recv / 1e6, 2),
+        "packets_sent": stats.packets_sent,
+        "packets_recv": stats.packets_recv,
+        "established_connections": sum(1 for c in conns if c.status == "ESTABLISHED"),
+        "total_connections": len(conns),
+    }
+
+
+def _network_stats_wsl() -> dict:
+    script = """
+$n = Get-NetAdapterStatistics | Measure-Object -Property ReceivedBytes,SentBytes -Sum
+$conns = (Get-NetTCPConnection -State Established -ErrorAction SilentlyContinue).Count
+[PSCustomObject]@{
+  bytes_recv_mb = [math]::Round(($n | Where-Object Property -eq ReceivedBytes).Sum/1MB, 2)
+  bytes_sent_mb = [math]::Round(($n | Where-Object Property -eq SentBytes).Sum/1MB, 2)
+  established_connections = $conns
+} | ConvertTo-Json
+"""
     try:
-        from ctypes import cast, POINTER
-        from comtypes import CLSCTX_ALL
-        from pycaw.pycaw import AudioUtilities, IAudioEndpointVolume
-        import math
+        data = json.loads(_ps(script))
+        data["packets_sent"] = 0
+        data["packets_recv"] = 0
+        data["total_connections"] = data["established_connections"]
+        return data
+    except Exception:
+        return {"bytes_sent_mb": 0, "bytes_recv_mb": 0,
+                "established_connections": 0, "total_connections": 0}
 
-        devices = AudioUtilities.GetSpeakers()
-        interface = devices.Activate(IAudioEndpointVolume._iid_, CLSCTX_ALL, None)
-        volume = cast(interface, POINTER(IAudioEndpointVolume))
-        scalar = max(0.0, min(1.0, level / 100.0))
-        volume.SetMasterVolumeLevelScalar(scalar, None)
-        return {"success": True, "volume": level}
-    except Exception as e:
-        return {"success": False, "error": str(e)}
 
+# ── Startup programs ───────────────────────────────────────────────────────────
 
 def get_startup_programs() -> list:
-    """List startup programs from Windows registry."""
+    if IS_WSL:
+        script = """
+$paths = @(
+  'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Run',
+  'HKLM:\\Software\\Microsoft\\Windows\\CurrentVersion\\Run'
+)
+$out = @()
+foreach ($p in $paths) {
+  $k = Get-ItemProperty $p -ErrorAction SilentlyContinue
+  if ($k) { $k.PSObject.Properties | Where-Object {$_.Name -notlike 'PS*'} |
+    ForEach-Object { $out += [PSCustomObject]@{name=$_.Name;path=$_.Value} } }
+}
+$out | ConvertTo-Json
+"""
+        try:
+            raw = _ps(script)
+            if not raw:
+                return []
+            result = json.loads(raw)
+            return result if isinstance(result, list) else [result]
+        except Exception:
+            return []
     if sys.platform != "win32":
         return []
     try:
         import winreg
         results = []
-        keys = [
+        for hive, path in [
             (winreg.HKEY_CURRENT_USER, r"Software\Microsoft\Windows\CurrentVersion\Run"),
             (winreg.HKEY_LOCAL_MACHINE, r"Software\Microsoft\Windows\CurrentVersion\Run"),
-        ]
-        for hive, path in keys:
+        ]:
             try:
                 key = winreg.OpenKey(hive, path)
                 i = 0
@@ -293,5 +343,154 @@ def get_startup_programs() -> list:
             except Exception:
                 pass
         return results
+    except Exception:
+        return []
+
+
+# ── Volume control ─────────────────────────────────────────────────────────────
+
+def set_volume(level: int) -> dict:
+    level = max(0, min(100, level))
+    if IS_WSL:
+        scalar = level / 100.0
+        script = f"""
+$vol = New-Object -ComObject WScript.Shell
+Add-Type -TypeDefinition @'
+using System.Runtime.InteropServices;
+[Guid("5CDF2C82-841E-4546-9722-0CF74078229A"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+interface IAudioEndpointVolume {{ int f(); int ff(); int fff(); int SetMasterVolumeLevelScalar(float f, System.Guid guid); }}
+[Guid("BCDE0395-E52F-467C-8E3D-C4579291692E")]
+class MMDeviceEnumerator {{}}
+'@ -ErrorAction SilentlyContinue
+# Simpler: use nircmd if available, else WScript
+$nircmd = "$env:WINDIR\\nircmd.exe"
+if (Test-Path $nircmd) {{
+  & $nircmd setsysvolume {int(scalar * 65535)}
+}} else {{
+  # PowerShell audio via shell
+  $wsh = New-Object -ComObject WScript.Shell
+  # mute/unmute approach not ideal; use SetMasterVolume via COM
+  [System.Reflection.Assembly]::LoadWithPartialName('System.Windows.Forms') | Out-Null
+}}
+'ok'
+"""
+        # Simpler reliable approach via nircmdc or just set via WScript mute hack
+        simple = f"""
+Add-Type -AssemblyName System.Windows.Forms
+$vol = {level}
+$cur = [System.Windows.Forms.SystemInformation]::MouseWheelScrollDelta
+# Use Win32 API via inline C#
+Add-Type -TypeDefinition @"
+using System;
+using System.Runtime.InteropServices;
+public class Audio {{
+  [DllImport("user32.dll")] public static extern void keybd_event(byte bVk, byte bScan, uint dwFlags, int dwExtraInfo);
+}}
+"@
+# Note: volume set via PowerShell AudioDevice object
+$devices = [System.Runtime.InteropServices.Marshal]::GetActiveObject
+'ok'
+"""
+        # Most reliable WSL volume control: use PowerShell with Win32 COM
+        best = f"""
+$volume = {level / 100.0}
+Add-Type -TypeDefinition @"
+using System.Runtime.InteropServices;
+[Guid("5CDF2C82-841E-4546-9722-0CF74078229A"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+interface IAudioEndpointVolume {{
+  int _vt1(); int _vt2(); int _vt3();
+  int SetMasterVolumeLevelScalar(float level, System.Guid evt);
+  int GetMasterVolumeLevelScalar(out float level);
+}}
+[Guid("BCDE0395-E52F-467C-8E3D-C4579291692E")]
+[ClassInterface(ClassInterfaceType.None)]
+class MMDeviceEnumeratorClass {{}}
+[Guid("A95664D2-9614-4F35-A746-DE8DB63617E6"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+interface IMMDeviceEnumerator {{
+  int EnumAudioEndpoints(int flow, int state, out System.IntPtr devices);
+  int GetDefaultAudioEndpoint(int flow, int role, out System.IntPtr endpoint);
+}}
+"@ -ErrorAction SilentlyContinue
+try {{
+  $obj = [System.Runtime.InteropServices.Marshal]::CreateWrapperOfType(
+    [System.Runtime.InteropServices.Marshal]::GetActiveObject("MMDeviceEnumerator"),
+    [IMMDeviceEnumerator])
+}} catch {{}}
+# Fallback: nircmd
+$nircmd = "$env:WINDIR\\nircmd.exe"
+if (Test-Path $nircmd) {{
+  & $nircmd setsysvolume {int(level / 100.0 * 65535)}
+  'ok'
+}} else {{
+  'nircmd not found - volume control requires nircmd.exe in Windows folder'
+}}
+"""
+        out = _ps(best)
+        if "ok" in out:
+            return {"success": True, "volume": level}
+        return {"success": False, "error": out or "Volume control not available without nircmd.exe"}
+
+    if sys.platform != "win32":
+        return {"success": False, "error": "Windows only"}
+    try:
+        from ctypes import cast, POINTER
+        from comtypes import CLSCTX_ALL
+        from pycaw.pycaw import AudioUtilities, IAudioEndpointVolume
+        devices = AudioUtilities.GetSpeakers()
+        interface = devices.Activate(IAudioEndpointVolume._iid_, CLSCTX_ALL, None)
+        volume = cast(interface, POINTER(IAudioEndpointVolume))
+        volume.SetMasterVolumeLevelScalar(level / 100.0, None)
+        return {"success": True, "volume": level}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+# ── File search ────────────────────────────────────────────────────────────────
+
+def search_files(query: str, search_path: str = None, limit: int = 20) -> list:
+    if IS_WSL:
+        return _search_files_wsl(query, search_path, limit)
+    if not search_path:
+        search_path = os.path.expanduser("~") if sys.platform != "win32" else "C:\\"
+    results = []
+    query_lower = query.lower()
+    try:
+        for root, dirs, files in os.walk(search_path):
+            dirs[:] = [d for d in dirs if not d.startswith(".") and d not in
+                       {"__pycache__", "node_modules", ".git", "venv"}]
+            for fname in files:
+                if query_lower in fname.lower():
+                    full_path = os.path.join(root, fname)
+                    try:
+                        stat = os.stat(full_path)
+                        results.append({"name": fname, "path": full_path,
+                                        "size_kb": round(stat.st_size / 1024, 1),
+                                        "modified": datetime.fromtimestamp(stat.st_mtime).strftime("%Y-%m-%d %H:%M")})
+                    except Exception:
+                        results.append({"name": fname, "path": full_path})
+                    if len(results) >= limit:
+                        return results
+    except PermissionError:
+        pass
+    return results
+
+
+def _search_files_wsl(query: str, search_path: str, limit: int) -> list:
+    root = search_path or r"C:\Users"
+    script = f"""
+Get-ChildItem -Path '{root}' -Filter '*{query}*' -Recurse -ErrorAction SilentlyContinue |
+Select-Object -First {limit} `
+  @{{N='name';E={{$_.Name}}}},
+  @{{N='path';E={{$_.FullName}}}},
+  @{{N='size_kb';E={{[math]::Round($_.Length/1KB,1)}}}},
+  @{{N='modified';E={{$_.LastWriteTime.ToString('yyyy-MM-dd HH:mm')}}}} |
+ConvertTo-Json
+"""
+    try:
+        raw = _ps(script)
+        if not raw:
+            return []
+        result = json.loads(raw)
+        return result if isinstance(result, list) else [result]
     except Exception:
         return []
