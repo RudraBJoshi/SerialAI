@@ -23,9 +23,29 @@ tts: TTSEngine = None
 stt: STTEngine = None
 
 
+_TOOL_LABELS = {
+    "web_search":          "SEARCHING WEB",
+    "get_system_info":     "SCANNING SYSTEM",
+    "list_processes":      "READING PROCESSES",
+    "kill_process":        "TERMINATING PROCESS",
+    "search_files":        "SEARCHING FILES",
+    "launch_application":  "LAUNCHING APP",
+    "get_network_stats":   "READING NETWORK",
+    "get_startup_programs":"READING STARTUP",
+    "set_volume":          "ADJUSTING VOLUME",
+    "shutdown_serial_ai":  "SHUTTING DOWN",
+    "run_powershell":      "RUNNING POWERSHELL",
+    "thinking":            "THINKING",
+}
+
 def init_engines(api_key: str):
     global gemini, tts, stt
-    gemini = AIEngine(api_key)
+
+    def on_tool_status(name: str):
+        label = _TOOL_LABELS.get(name, name.replace("_", " ").upper())
+        socketio.emit("ai_tool_status", {"label": label})
+
+    gemini = AIEngine(api_key, on_status=on_tool_status)
     tts = TTSEngine()
     stt = STTEngine()
 
@@ -43,6 +63,7 @@ def _handle_message(user_text: str):
     """Core: send to Gemini, TTS the reply, emit to frontend."""
     socketio.emit("user_message", {"text": user_text})
     socketio.emit("ai_status", {"status": "thinking"})
+    socketio.emit("ai_tool_status", {"label": "THINKING"})
 
     context = sm.get_system_snapshot()
     reply = gemini.send_message(user_text, system_context=context)

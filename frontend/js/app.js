@@ -68,6 +68,10 @@ function connectSocket() {
     setAIState(data.status);
   });
 
+  socket.on("ai_tool_status", (data) => {
+    aiStatusLabel.textContent = data.label;
+  });
+
   socket.on("stt_status", (data) => {
     const map = {
       calibrating: "CALIBRATING",

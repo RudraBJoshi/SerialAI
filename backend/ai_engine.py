@@ -112,7 +112,7 @@ Live system telemetry (CPU %, RAM, process count) is injected per message. Use i
 
 
 class AIEngine:
-    def __init__(self, api_key: str):
+    def __init__(self, api_key: str, on_status=None):
         self._api_key = api_key
         self._client = OpenAI(
             api_key=api_key,
@@ -120,6 +120,7 @@ class AIEngine:
         )
         self._messages = [{"role": "system", "content": SYSTEM_PROMPT}]
         self.conversation_history = []
+        self._on_status = on_status  # callable(label: str)
 
     def send_message(self, user_input: str, system_context: dict = None) -> str:
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -179,7 +180,11 @@ class AIEngine:
                 for tc in choice.message.tool_calls:
                     args = json.loads(tc.function.arguments or "{}")
                     print(f"[TOOL] {tc.function.name}({args})")
+                    if self._on_status:
+                        self._on_status(tc.function.name)
                     result = run_tool(tc.function.name, args, api_key=self._api_key)
+                    if self._on_status:
+                        self._on_status("thinking")
                     self._messages.append({
                         "role": "tool",
                         "tool_call_id": tc.id,
