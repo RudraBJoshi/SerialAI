@@ -136,6 +136,18 @@ SCHEMAS = [
     {
         "type": "function",
         "function": {
+            "name": "get_location",
+            "description": (
+                "Detect the user's current location based on their public IP address. "
+                "Returns city, region, country, timezone, ISP, and coordinates. "
+                "Use this for any location or weather-related question before web_search."
+            ),
+            "parameters": {"type": "object", "properties": {}},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "run_powershell",
             "description": (
                 "Execute any PowerShell command on the Windows host as Administrator. "
@@ -228,6 +240,9 @@ def execute(name: str, args: dict, api_key: str = "") -> str:
             threading.Thread(target=_call, daemon=True).start()
             return "Shutting down Serial AI."
 
+        elif name == "get_location":
+            return _get_location()
+
         elif name == "web_search":
             return _perplexity_search(args["query"], api_key)
 
@@ -248,6 +263,26 @@ def execute(name: str, args: dict, api_key: str = "") -> str:
 
     except Exception as e:
         return f"Tool error ({name}): {str(e)}"
+
+
+def _get_location() -> str:
+    """Detect location from public IP using ip-api.com (free, no key required)."""
+    try:
+        with httpx.Client(timeout=10) as client:
+            r = client.get("http://ip-api.com/json/?fields=status,message,country,regionName,city,zip,lat,lon,timezone,isp,query")
+            r.raise_for_status()
+            d = r.json()
+        if d.get("status") != "success":
+            return f"Location lookup failed: {d.get('message', 'unknown error')}"
+        return (
+            f"IP: {d['query']} | "
+            f"Location: {d['city']}, {d['regionName']}, {d['country']} {d.get('zip','')} | "
+            f"Coordinates: {d['lat']}, {d['lon']} | "
+            f"Timezone: {d['timezone']} | "
+            f"ISP: {d['isp']}"
+        )
+    except Exception as e:
+        return f"Location lookup failed: {str(e)[:120]}"
 
 
 def _perplexity_search(query: str, api_key: str) -> str:

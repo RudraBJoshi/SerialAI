@@ -24,6 +24,7 @@ stt: STTEngine = None
 
 
 _TOOL_LABELS = {
+    "get_location":        "LOCATING",
     "web_search":          "SEARCHING WEB",
     "get_system_info":     "SCANNING SYSTEM",
     "list_processes":      "READING PROCESSES",
