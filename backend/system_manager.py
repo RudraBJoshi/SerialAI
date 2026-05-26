@@ -5,6 +5,8 @@ import sys
 import subprocess
 import json
 import platform
+import threading
+import time
 from datetime import datetime
 
 import psutil
@@ -19,6 +21,29 @@ def _is_wsl() -> bool:
         return False
 
 IS_WSL = _is_wsl()
+
+# ── Background process cache (avoids blocking HTTP responses) ──────────────────
+
+_proc_cache: list = []
+_proc_cache_lock = threading.Lock()
+_proc_cache_started = False
+
+def _proc_cache_worker():
+    while True:
+        try:
+            data = _list_processes_wsl("cpu", 20)
+            with _proc_cache_lock:
+                global _proc_cache
+                _proc_cache = data
+        except Exception:
+            pass
+        time.sleep(3)
+
+def _ensure_proc_cache():
+    global _proc_cache_started
+    if not _proc_cache_started:
+        _proc_cache_started = True
+        threading.Thread(target=_proc_cache_worker, daemon=True).start()
 
 
 def _ps(cmd: str, timeout: int = 15) -> str:
@@ -197,7 +222,12 @@ $bat  = Get-WmiObject Win32_Battery -ErrorAction SilentlyContinue
 
 def list_processes(sort_by: str = "cpu", limit: int = 20) -> list:
     if IS_WSL:
-        return _list_processes_wsl(sort_by, limit)
+        _ensure_proc_cache()
+        with _proc_cache_lock:
+            data = list(_proc_cache)
+        key = "mem" if sort_by == "memory" else "cpu"
+        data.sort(key=lambda p: p.get(key, 0), reverse=True)
+        return data[:limit]
     procs = []
     for p in psutil.process_iter(["pid", "name", "cpu_percent", "memory_percent", "status"]):
         try:
