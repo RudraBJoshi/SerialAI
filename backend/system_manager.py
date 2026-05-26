@@ -235,6 +235,10 @@ ConvertTo-Json
 # ── Launch application ─────────────────────────────────────────────────────────
 
 def launch_application(app_name: str) -> dict:
+    if IS_WSL:
+        return _launch_wsl(app_name)
+
+    # Native Windows
     app_map = {
         "notepad": "notepad.exe", "calculator": "calc.exe",
         "paint": "mspaint.exe", "explorer": "explorer.exe",
@@ -246,15 +250,69 @@ def launch_application(app_name: str) -> dict:
     }
     exe = app_map.get(app_name.lower().strip(), app_name)
     try:
-        if IS_WSL:
-            _ps(f"Start-Process '{exe}'")
-        elif sys.platform == "win32":
-            os.startfile(exe) if ":" in exe else subprocess.Popen([exe])
-        else:
-            subprocess.Popen(["xdg-open", exe])
+        os.startfile(exe) if sys.platform == "win32" else subprocess.Popen(["xdg-open", exe])
         return {"success": True, "launched": exe}
     except Exception as e:
         return {"success": False, "error": str(e)}
+
+
+def _launch_wsl(app_name: str) -> dict:
+    """Smart app launcher for WSL — tries hardcoded map, Start menu, then file search."""
+    name = app_name.strip()
+    name_lower = name.lower()
+
+    # 1. Hardcoded common apps (instant, no search needed)
+    app_map = {
+        "notepad":      "notepad.exe",
+        "calculator":   "calc.exe",
+        "paint":        "mspaint.exe",
+        "explorer":     "explorer.exe",
+        "task manager": "taskmgr.exe",
+        "cmd":          "cmd.exe",
+        "powershell":   "powershell.exe",
+        "edge":         r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
+        "chrome":       r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+        "firefox":      r"C:\Program Files\Mozilla Firefox\firefox.exe",
+        "word":         "winword.exe",
+        "excel":        "excel.exe",
+        "settings":     "ms-settings:",
+    }
+    if name_lower in app_map:
+        exe = app_map[name_lower]
+        _ps(f"Start-Process '{exe}'")
+        return {"success": True, "launched": exe}
+
+    # 2. Search Windows Start menu apps (UWP / Store apps like Minecraft Launcher)
+    script_start = (
+        f"$app = Get-StartApps | Where-Object {{ $_.Name -like '*{name}*' }} | Select-Object -First 1; "
+        "if ($app) { Start-Process 'explorer.exe' \"shell:AppsFolder`$($app.AppID)\"; "
+        "Write-Output \"launched:$($app.Name)\" } else { Write-Output 'notfound' }"
+    )
+    out = _ps(script_start)
+    if out.startswith("launched:"):
+        launched_name = out.replace("launched:", "").strip()
+        return {"success": True, "launched": launched_name}
+
+    # 3. Search common install directories for a matching .exe
+    pf   = r"$env:ProgramFiles"
+    pf86 = r"$env:ProgramFiles(x86)"
+    lapp = r"$env:LOCALAPPDATA\Programs"
+    wapp = r"$env:LOCALAPPDATA\Microsoft\WindowsApps"
+    rapp = r"$env:APPDATA"
+    script_find = f"""
+$search_dirs = @('{pf}', '{pf86}', '{lapp}', '{wapp}', '{rapp}')
+$exe = Get-ChildItem -Path $search_dirs -Filter '*{name}*.exe' -Recurse -ErrorAction SilentlyContinue |
+    Where-Object {{ $_.Name -notlike '*uninstall*' -and $_.Name -notlike '*setup*' }} |
+    Select-Object -First 1
+if ($exe) {{ Start-Process $exe.FullName; Write-Output "launched:$($exe.Name)" }}
+else {{ Write-Output 'notfound' }}
+"""
+    out2 = _ps(script_find)
+    if out2.startswith("launched:"):
+        launched_name = out2.replace("launched:", "").strip()
+        return {"success": True, "launched": launched_name}
+
+    return {"success": False, "error": f"Could not find '{name}'. Make sure it's installed and try the exact app name."}
 
 
 # ── Network stats ──────────────────────────────────────────────────────────────
