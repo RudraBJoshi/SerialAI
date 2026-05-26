@@ -31,7 +31,7 @@ echo "[1/3] Starting backend server..."
 python - <<'PYEOF' &
 import os, sys
 sys.path.insert(0, '.')
-from dotenv import load_dotenv; load_dotenv()
+from dotenv import load_dotenv; load_dotenv('.env')
 from backend.api import app, init_engines, run_server
 from main import register_frontend_routes
 register_frontend_routes()
