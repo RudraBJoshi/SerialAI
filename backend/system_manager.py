@@ -213,39 +213,34 @@ def list_processes(sort_by: str = "cpu", limit: int = 20) -> list:
 
 
 def _list_processes_wsl(sort_by: str, limit: int) -> list:
-    # Get-Counter samples over 1 second — the only reliable way to get real-time CPU%
-    # from WSL2. WMI PerfFormattedData returns a raw 64-bit counter on the first call.
+    # Two-snapshot delta: take CPU (seconds) before and after a 1s sleep.
+    # delta / 1s / cores * 100 gives real-time %. Avoids Get-Counter locale issues
+    # and WMI PerfFormattedData's broken first-call values.
     script = f"""
+$snap1 = @{{}}
+Get-Process -ErrorAction SilentlyContinue | ForEach-Object {{ $snap1[$_.Id] = $_.CPU }}
+
+Start-Sleep -Milliseconds 1000
+
 $cores = (Get-CimInstance Win32_ComputerSystem).NumberOfLogicalProcessors
 if (!$cores -or $cores -lt 1) {{ $cores = 1 }}
 
-$cpuMap = @{{}}
-$sample = Get-Counter '\Process(*)\% Processor Time' -SampleInterval 1 -MaxSamples 1 -ErrorAction SilentlyContinue
-if ($sample) {{
-    $sample.CounterSamples |
-        Where-Object {{ $_.InstanceName -notmatch '^(idle|_total)$' }} |
-        ForEach-Object {{
-            $n = $_.InstanceName.ToLower()
-            if (!$cpuMap.ContainsKey($n)) {{ $cpuMap[$n] = 0.0 }}
-            $cpuMap[$n] += $_.CookedValue
-        }}
-}}
-
-$procs = Get-Process -ErrorAction SilentlyContinue | ForEach-Object {{
-    $n = $_.Name.ToLower()
-    $raw = if ($cpuMap.ContainsKey($n)) {{ $cpuMap[$n] }} else {{ 0.0 }}
+$result = Get-Process -ErrorAction SilentlyContinue | ForEach-Object {{
+    $prev    = if ($snap1.ContainsKey($_.Id)) {{ [double]$snap1[$_.Id] }} else {{ [double]$_.CPU }}
+    $delta   = [math]::Max(0, [double]$_.CPU - $prev)
+    $cpuPct  = [math]::Round($delta / 1.0 / $cores * 100, 1)
     [PSCustomObject]@{{
         pid  = $_.Id
         name = $_.Name
-        cpu  = [math]::Round($raw / $cores, 1)
+        cpu  = $cpuPct
         mem  = [math]::Round($_.WorkingSet / 1MB, 1)
     }}
 }}
 
 if ('{sort_by}' -eq 'memory') {{
-    $sorted = $procs | Sort-Object mem -Descending
+    $sorted = $result | Sort-Object mem -Descending
 }} else {{
-    $sorted = $procs | Sort-Object cpu -Descending
+    $sorted = $result | Sort-Object cpu -Descending
 }}
 
 $sorted | Select-Object -First {limit} pid, name, cpu, mem | ConvertTo-Json
