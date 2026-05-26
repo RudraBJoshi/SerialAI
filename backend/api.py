@@ -61,9 +61,11 @@ def _handle_message(user_text: str):
 
 # ── REST Endpoints ─────────────────────────────────────────────────────────────
 
+BUILD_TIME = __import__("datetime").datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
 @app.route("/api/health")
 def health():
-    return jsonify({"status": "online", "gemini": gemini is not None})
+    return jsonify({"status": "online", "gemini": gemini is not None, "started": BUILD_TIME})
 
 
 @app.route("/api/chat", methods=["POST"])

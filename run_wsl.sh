@@ -28,6 +28,10 @@ echo "  ╚═══════════════════════
 echo ""
 echo "[1/3] Starting backend server..."
 
+# Kill any leftover server on this port before starting fresh
+fuser -k ${PORT}/tcp 2>/dev/null || true
+sleep 0.3
+
 python - <<'PYEOF' &
 import os, sys
 sys.path.insert(0, '.')
